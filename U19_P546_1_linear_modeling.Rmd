@@ -1,0 +1,221 @@
+---
+title: "U19_P546_1_linear_modeling.Rmd"
+output: html_document
+date: "2024-03-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# U19-P546-1
+## Ryan Murphy, Dane Grosvenor, Kim Dill-McFarland, Matt Altman
+
+## Include Viral Counts and Metadata
+
+### Load libraries
+
+```{r load_libs, message=FALSE}
+
+library(tidyverse)
+library(BIGpicture)
+library(kimma)
+library(RNAetc)
+library(SEARchways)
+library(ggrepel)
+library(limma)
+library(edgeR)
+library(readr)
+library(stringr)
+library(lme4)
+library(data.table)
+library(patchwork)
+library(scales)
+library(WGCNA)
+library(rrvgo)
+library(readxl)
+library(openxlsx)
+library(emmeans)
+library(ggupset)
+library(ggpubr)
+
+set.seed(101)
+
+```
+
+### Functions
+
+```{r fxs}
+
+loadRData <- function(fileName) {
+  load(fileName)
+  get(ls()[ls() !="fileName"])
+}
+
+```
+
+### Make Directories
+
+```{r make_dirs}
+
+dir.create("dat_clean/linear_model_output")
+
+```
+
+### Load Data
+
+```{r load_dat, message=FALSE}
+
+# load prior voom object, focusing on Mast Cell
+mc_voom_viral <- loadRData(file = "dat_clean/voom_objects/mc_voom_viral.RData")
+ens_gene_dict <- loadRData(file = "dat_clean/ensembl_gene_dictionary.RData")
+
+```
+
+## 2 Separate Models
+
+## ~ Timepoint*Treatment + median_cv_coverage
+
+```{r time_treat_lm, warning = FALSE, message = FALSE}
+
+mc_viral_lm_timepoint_treatment <- kimma::kmFit(mc_voom_viral,
+             model = "~ Timepoint*Treatment + median_cv_coverage",
+             run_contrast = TRUE,
+             contrast_var = "Timepoint:Treatment",
+             run_lm = TRUE,
+             metrics = TRUE,
+             use_weights = TRUE)
+
+# View outpust of significant DEGs for contrats of interest at range of FDR cutoffs
+# summarize_kmFit(mc_viral_lm_timepoint_treatment$lm.contrast, fdr_cutoff = c(0.1, 0.2, 0.25, 0.3)) %>% 
+#   filter(contrast_ref == "Baseline Alone" & contrast_lvl %in% c("4 hrs Alone", "8 hrs Alone", "28 hrs Alone",
+#                                                                 "52 hrs Alone", "4 hrs AECs", "8 hrs AECs",
+#                                                                 "28 hrs AECs", "52 hrs AECs") |
+#   contrast_ref == "8 hrs Alone" & contrast_lvl == "8 hrs AECs" |
+#   contrast_ref == "28 hrs Alone" & contrast_lvl == "28 hrs AECs" |
+#   contrast_ref == "52 hrs Alone" & contrast_lvl == "52 hrs AECs")
+
+# save linear model output
+# 06/20/24
+saveRDS(mc_viral_lm_timepoint_treatment, file = "dat_clean/linear_model_output/mc_viral_lm_timepoint_treatment.RDS")
+
+```
+
+### ~ viral (log2CPM) + median_cv_coverage
+
+```{r viral_load_lm, warning = FALSE, message = FALSE}
+
+mc_viral_lm_viralloadCPMLog2 <- kimma::kmFit(mc_voom_viral,
+                                       model = "~ normSalmonQuantCountsCPMLog2 + median_cv_coverage",
+                                       run_contrast = FALSE,
+                                       run_lm = TRUE,
+                                       metrics = TRUE,
+                                       use_weights = TRUE)
+
+# View outpust of significant DEGs at range of FDR cutoffs
+# summarize_kmFit(mc_viral_lm_viralloadCPMLog2$lm, fdr_cutoff = c(0.1, 0.2, 0.25, 0.3))
+
+# save linear model output
+# 06/20/24
+saveRDS(mc_viral_lm_viralloadCPMLog2, file = "dat_clean/linear_model_output/mc_viral_lm_viralloadCPMLog2.RDS")
+
+```
+
+## Create output data frames of linear model outputs
+
+### Mast Cell linear model output
+
+```{r mc_lm_out_df}
+
+mc_viral_lm_timepoint_treatment_out <- mc_viral_lm_timepoint_treatment$lm.contrast %>% 
+  tidyr::drop_na() %>% 
+  # filter for contrasts of interest
+  dplyr::filter(contrast_ref == "Baseline Alone" & contrast_lvl %in% c("4 hrs Alone", "8 hrs Alone", "28 hrs Alone",
+                                                                "52 hrs Alone", "4 hrs AECs", "8 hrs AECs",
+                                                                "28 hrs AECs", "52 hrs AECs") |
+  contrast_ref == "8 hrs Alone" & contrast_lvl == "8 hrs AECs" |
+  contrast_ref == "28 hrs Alone" & contrast_lvl == "28 hrs AECs" |
+  contrast_ref == "52 hrs Alone" & contrast_lvl == "52 hrs AECs") %>% 
+  # create contrasts variable for each pairwise contrast of interest, set as factor
+  dplyr::mutate(contrasts = paste0(contrast_ref, "+", contrast_lvl)) %>% 
+  dplyr::mutate(contrasts = factor(contrasts, levels = c("Baseline Alone+4 hrs Alone",
+                                                  "Baseline Alone+8 hrs Alone",
+                                                  "Baseline Alone+28 hrs Alone",
+                                                  "Baseline Alone+52 hrs Alone",
+                                                  "Baseline Alone+4 hrs AECs",
+                                                  "Baseline Alone+8 hrs AECs",
+                                                  "Baseline Alone+28 hrs AECs",
+                                                  "Baseline Alone+52 hrs AECs",
+                                                  "8 hrs Alone+8 hrs AECs",
+                                                  "28 hrs Alone+28 hrs AECs",
+                                                  "52 hrs Alone+52 hrs AECs"))) %>% 
+  dplyr::filter(FDR < 0.25) %>% 
+  dplyr::group_by(contrasts) %>% 
+  dplyr::arrange(FDR, .by_group = TRUE) %>% 
+  dplyr::ungroup()
+
+# save as csv
+# 06/20/24
+write.csv(mc_viral_lm_timepoint_treatment_out, file = "dat_clean/linear_model_output/mc_viral_lm_timepoint_treatment_out_df.csv")
+
+```
+
+### Viral Load linear model output
+
+```{r viral_load_lm_out_df}
+
+viral_lm_viral_loadCPMLog2_out <- mc_viral_lm_viralloadCPMLog2$lm %>% 
+  dplyr::filter(variable == "normSalmonQuantCountsCPMLog2") %>% # filter to just effect of viral load
+  dplyr::filter(FDR < 0.25)
+
+# save as csv
+# 06/20/24
+write.csv(viral_lm_viral_loadCPMLog2_out, file = "dat_clean/linear_model_output/viral_lm_viral_loadCPMLog2_out_df.csv")
+
+```
+
+### Get gene of interest contrasts
+IL3RA, Il5RA, IL18R1, IL1RL1, CCR2, CCR5, LTC4S
+
+```{r}
+
+goi_contrasts <- mc_viral_lm_timepoint_treatment$lm.contrast %>% 
+  rename(ensembl_gene_id = gene) %>% 
+  left_join(ens_gene_dict, by = "ensembl_gene_id") %>% 
+  filter(geneName %in% c("IL3RA", "IL5RA", "IL18R1", "IL1RL1", "CCR2", "CCR5", "LTC4S")) %>% 
+  filter(FDR < 0.30) %>% 
+  relocate(geneName, .after = "ensembl_gene_id") %>% 
+  dplyr::filter(contrast_ref == "Baseline Alone" & contrast_lvl %in% c("4 hrs Alone", "8 hrs Alone", "28 hrs Alone",
+                                                                "52 hrs Alone", "4 hrs AECs", "8 hrs AECs",
+                                                                "28 hrs AECs", "52 hrs AECs") |
+  contrast_ref == "8 hrs Alone" & contrast_lvl == "8 hrs AECs" |
+  contrast_ref == "28 hrs Alone" & contrast_lvl == "28 hrs AECs" |
+  contrast_ref == "52 hrs Alone" & contrast_lvl == "52 hrs AECs") %>% 
+  # create contrasts variable for each pairwise contrast of interest, set as factor
+  dplyr::mutate(contrasts = paste0(contrast_ref, "+", contrast_lvl)) %>% 
+  dplyr::mutate(contrasts = factor(contrasts, levels = c("Baseline Alone+4 hrs Alone",
+                                                  "Baseline Alone+8 hrs Alone",
+                                                  "Baseline Alone+28 hrs Alone",
+                                                  "Baseline Alone+52 hrs Alone",
+                                                  "Baseline Alone+4 hrs AECs",
+                                                  "Baseline Alone+8 hrs AECs",
+                                                  "Baseline Alone+28 hrs AECs",
+                                                  "Baseline Alone+52 hrs AECs",
+                                                  "8 hrs Alone+8 hrs AECs",
+                                                  "28 hrs Alone+28 hrs AECs",
+                                                  "52 hrs Alone+52 hrs AECs"))) %>% 
+  dplyr::arrange(geneName)
+
+# 06/20/24
+write.csv(goi_contrasts, file = "dat_clean/goi_contrasts.csv")
+
+```
+
+### R session info
+
+```{r sesh}
+
+sessionInfo()
+
+```
+
