@@ -1,0 +1,354 @@
+---
+title: "P546_1_clean_to_voom.Rmd"
+output: html_document
+date: "2024-03-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# U19-P546-1
+## Ryan Murphy, Dane Grosvenor, Kim Dill-McFarland, Matt Altman
+
+## Clean Data to Voom Object
+
+### Load libraries
+
+```{r load_libs, message = FALSE}
+
+library(tidyverse)
+library(BIGpicture)
+library(kimma)
+library(RNAetc)
+library(SEARchways)
+library(ggrepel)
+library(limma)
+library(edgeR)
+library(readr)
+library(stringr)
+library(lme4)
+library(data.table)
+library(org.Hs.eg.db)
+library(patchwork)
+library(scales)
+
+set.seed(101)
+
+```
+
+### Functions
+
+```{r fxs}
+
+# https://stackoverflow.com/a/39671052
+colClean <- function(x){ colnames(x) <- gsub(".*lib", "lib", colnames(x)); x } 
+
+```
+
+### Make Directories
+
+```{r make_dirs}
+
+dir.create("dat_clean", showWarnings = FALSE)
+dir.create("dat_clean/voom_objects")
+dir.create("figures", showWarnings = FALSE)
+dir.create("figures/PCA", showWarnings = FALSE)
+
+```
+
+### Load Data
+
+```{r load_dat, warning = FALSE}
+
+p546_counts <- read.csv(file = "dat_raw/230727-P546-1_FilteredNormGeneCounts.csv")
+p546_raw_counts <- read.csv(file = "dat_raw/230727-P546-1_RawGeneCounts.csv")
+p546_QCMetrics <- read.csv(file = "dat_raw/230727-P546-1qcMetricsSummary.csv")
+p546_anno <- read.csv(file = "dat_raw/P546-1_Final_Annotation.csv")
+
+# join QC metadata and annotation metadata
+p546_meta <- p546_anno %>%
+  dplyr::rename(libid = lib.ID) %>%
+  left_join(p546_QCMetrics, by = "libid") %>%
+  dplyr::rename(libID = libid)
+
+```
+
+### Ensembl Database
+
+```{r get_ensembl, mesage = FALSE}
+
+# load ensembl key from initial runs 03/26/2024
+key <- read.csv(file = "dat_raw/ensembl_key_03_26_2024.csv")
+
+# ensembl <- biomaRt::useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl",
+#                                 mirror = "useast")
+# 
+# key <- biomaRt::getBM(attributes=c("ensembl_gene_id", "entrezgene_id", "hgnc_symbol",
+#                                         "gene_biotype", "chromosome_name",
+#                                         "start_position", "end_position"), mart=ensembl) %>%
+#   #Filter protein coding genes
+#   filter(gene_biotype == "protein_coding")
+
+# write.csv(key, "dat_raw/ensembl_key_03_26_2024.csv")
+
+```
+
+### Data Adjustment
+
+```{r dat_adj}
+
+# get column names (libIDs) of counts data, remove ensembl ID and gene symbol
+counts_libIDs <- colnames(p546_counts)[-c(1:2)]
+
+# adjust metadata
+p546_meta <- p546_meta %>% 
+  dplyr::filter(libID != "") %>% 
+  dplyr::mutate(lib.ID = libID) %>% 
+  tibble::column_to_rownames(var = "lib.ID") %>% 
+  dplyr::filter(libID %in% counts_libIDs)
+
+# make gene symbol : ensembl ID dictionary
+ens_gene_dict <- p546_raw_counts %>% 
+  dplyr::filter(geneBiotype == "protein_coding") %>% 
+  dplyr::select(geneId, geneName, geneBiotype) %>% 
+  mutate(ensembl_gene_id = geneId)
+
+save(ens_gene_dict, file = "dat_clean/ensembl_gene_dictionary.RData")
+
+# filter raw counts to protein coding
+raw_counts_filtered <- p546_raw_counts %>%
+  mutate(ensembl_gene_id = geneId) %>%
+  filter(geneBiotype == "protein_coding") # 19,177 ensemblIDs
+
+# adjust sample colnames
+raw_counts_filtered <- colClean(raw_counts_filtered)
+
+# check duplicate ensembl IDs
+dup_ensembls <- data.frame(table(raw_counts_filtered$geneId)) %>%
+  dplyr::filter(Freq > 1) %>%
+  pull(Var1)
+
+# add symbol suffix to dup ensembl IDs
+raw_counts_filtered_dups <- raw_counts_filtered %>%
+  mutate(geneId = case_when(geneId %in% dup_ensembls ~ paste0(geneId, "_", geneName),
+                            TRUE ~ geneId))
+
+# adjust data frame for edgeR and voom requirements
+p546_metaV2 <- p546_meta %>% 
+  relocate(libID, .before = `Proj.Sub`) %>%
+  relocate(`Donor.ID`, .after = libID)
+
+# remove extra cols and force to matrix w/ ensembl IDs as rownames
+p546_counts_raw <- raw_counts_filtered_dups %>%
+  dplyr::select(-c(geneName, description, geneBiotype, ensembl_gene_id)) %>%
+  column_to_rownames(var = "geneId") %>%
+  as.matrix()
+
+# sanity check
+identical(colnames(p546_counts_raw), rownames(p546_metaV2)) # TRUE
+
+```
+
+### PCA (AECs and MCs)
+
+```{r pca_all, message = FALSE}
+
+pca_all_cells_before_norm <- BIGpicture::plot_pca(
+  p546_counts_raw,
+  meta = p546_metaV2,
+  vars = c("Cell.Type", "Treatment", "Stimulation", "Timepoint", 
+           "median_cv_coverage", "outlier")
+)
+
+pca_all_cells_before_norm <- pca_all_cells_before_norm$Cell.Type + pca_all_cells_before_norm$Treatment +
+  pca_all_cells_before_norm$Stimulation + pca_all_cells_before_norm$Timepoint +
+  pca_all_cells_before_norm$median_cv_coverage + pca_all_cells_before_norm$outlier
+
+ggsave(pca_all_cells_before_norm, file = "figures/PCA/PCA_all_cells_before_norm.png") 
+
+```
+
+### Filter poor quality libraries (AECs and MCs)
+
+```{r lib_qc}
+
+seq_cutoff <- 1e6
+cv_cutoff <- 1
+align_cutoff <- 75
+
+# all libraries pass seq cutoff
+ggplot(p546_metaV2,
+       aes(x = reorder(libID, fastq_total_reads), y = fastq_total_reads)) +
+  geom_col() +
+  geom_hline(yintercept = seq_cutoff) +
+  scale_y_continuous(trans = 'log10',
+    breaks = trans_breaks("log10", function(x) 10^x),
+    labels = trans_format("log10", math_format(10^.x))) +
+  #Beautify
+  theme_classic() +
+  labs(x = "Library", y = "Pass-filter sequences (log scale)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Set x-axis max to the larger of 1 or the highest data value
+CV_max <- max(1, max(p546_metaV2$median_cv_coverage))
+
+#Set cutoffs to label with libID
+cv_cutoff_label <- 0.9
+align_cutoff_label <- 75
+
+ggplot(p546_metaV2, aes(
+  x = median_cv_coverage, 
+  y = mapped_reads_pct)) +
+  geom_point() + 
+  #Rescale axis limits
+  lims(x = c(0,CV_max), y=c(0,100)) +
+  #Add cutoff lines
+  geom_hline(yintercept = align_cutoff, lty="dashed") +
+  geom_vline(xintercept = cv_cutoff, lty="dashed") +
+  #Label points outside cutoffs
+  geom_text_repel(data=filter(p546_metaV2, median_cv_coverage > cv_cutoff_label | 
+                              mapped_reads_pct < align_cutoff_label),
+            aes(label=libID), show.legend = FALSE, max.overlaps = Inf,
+            box.padding = 1) +
+  #Beautify
+  theme_classic() +
+  labs(x = "Median CV coverage", y="Percent alignment")
+
+```
+
+## Split Data by Cell Type and Run Voom Transformation
+### AEC
+
+```{r aec_dat}
+
+# filter to AEC cell type
+aec_meta <- p546_metaV2 %>%
+  dplyr::filter(`Cell.Type` == "Airway Epithelial Cells")
+
+# use "p546_counts_raw" to subset AEC
+# get AEC lib IDs
+aec_libs <- rownames(aec_meta)
+
+# filter raw counts to only AECs
+aec_counts_raw <- p546_counts_raw %>% 
+  as.data.frame() %>% 
+  dplyr::select(all_of(aec_libs))
+
+# sanity check
+identical(colnames(aec_counts_raw), rownames(aec_meta)) # TRUE
+
+```
+
+### Rare Gene Filter and Voom Transformation
+
+```{r aec_voom}
+
+# make vars of interest as factors, level factors
+aec_meta <- aec_meta %>% 
+  mutate(Timepoint = factor(Timepoint, levels = c("Baseline", "8 hrs", "28 hrs", "52 hrs"))) %>%
+  mutate(Treatment = as.factor(Treatment)) %>%
+  mutate(Stimulation = factor(Stimulation, levels = c("None", "HRV-Infected MCs")))
+
+# dge list
+aec_dge_list <- edgeR::DGEList(
+  counts = aec_counts_raw,
+  samples = aec_meta,
+  genes = ens_gene_dict
+  )
+
+# filter low abundance genes
+# min sample ~10% (3)
+aec_dge_list_filter <- RNAetc::filter_rare(aec_dge_list, min.CPM = 0.50, min.sample = 3,
+                    gene.var = "geneName")
+
+# calculate scaling factors
+calc_norm_factors_aec <- edgeR::calcNormFactors(aec_dge_list_filter)
+
+# voom transformation
+aec_voom <- limma::voom(
+  counts = calc_norm_factors_aec,
+  plot = TRUE
+)
+
+# save object
+# 06/20/2024
+save(aec_voom, file = "dat_clean/voom_objects/aec_voom.RData")
+
+```
+
+### Mast Cell
+
+```{r mc_dat}
+
+# filter to only MCs
+mc_meta <- p546_metaV2 %>%
+  filter(`Cell.Type` == "LAD2 MCs")
+
+# get MC lib IDs
+mc_libs <- rownames(mc_meta)
+
+# filter raw counts to only MCs
+mc_counts_raw <- p546_counts_raw %>% 
+  as.data.frame() %>% 
+  dplyr::select(all_of(mc_libs))
+
+# sanity check
+identical(colnames(mc_counts_raw), rownames(mc_meta)) # TRUE
+
+```
+
+### Rare Gene Filter and Voom Transformation
+
+```{r mc_voom}
+
+# filter protein coding genes
+mc_counts_raw_filtered <- mc_counts_raw %>%
+  filter(rownames(.) %in% key$ensembl_gene_id)
+
+# mutate vars of interest to factors and factor levels
+mc_meta <- mc_meta %>%
+  mutate(Timepoint = factor(Timepoint, levels = c("Baseline", "4 hrs", "8 hrs", "28 hrs", "52 hrs"))) %>%
+  mutate(Treatment = factor(Treatment, levels = c("Alone", "AECs"))) %>%
+  mutate(Stimulation = factor(Stimulation, levels = c("None", "HRV Infection")))
+
+# dge list
+mc_dge_list <- edgeR::DGEList(
+  counts = mc_counts_raw_filtered,
+  samples = mc_meta
+)
+
+# Filter low abundance genes
+# min sample ~10% (3)
+mc_dge_list <- RNAetc::filter_rare(mc_dge_list, min.CPM = 0.1, min.sample = 3,
+                    gene.var = "symbol")
+
+calc_norm_factors_mc <- edgeR::calcNormFactors(mc_dge_list)
+
+mc_voom <- limma::voom(
+  counts = calc_norm_factors_mc,
+  plot = TRUE
+)
+
+# uncomment if need for re-run, keep current version 05/23/24
+
+# re-run 06/20/24
+save(mc_voom, file = "dat_clean/voom_objects/mc_voom.RData")
+
+```
+
+### R session info
+
+```{r sesh}
+
+sessionInfo()
+
+```
+
+
+
+
+
+
+
+
