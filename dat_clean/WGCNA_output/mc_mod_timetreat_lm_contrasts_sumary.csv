@@ -1,0 +1,12 @@
+"","contrasts","num_genes"
+"1","Baseline Alone+4 hrs Alone",10
+"2","Baseline Alone+8 hrs Alone",9
+"3","Baseline Alone+28 hrs Alone",18
+"4","Baseline Alone+52 hrs Alone",13
+"5",NA,NA
+"6","Baseline Alone+8 hrs AECs",9
+"7","Baseline Alone+28 hrs AECs",10
+"8","Baseline Alone+52 hrs AECs",9
+"9",NA,NA
+"10","28 hrs Alone+28 hrs AECs",17
+"11","52 hrs Alone+52 hrs AECs",18
