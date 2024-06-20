@@ -1,0 +1,306 @@
+---
+title: "U19_P546_1_WGCNA.Rmd"
+output: html_document
+date: "2024-03-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# U19-P546-1
+## Ryan Murphy, Dane Grosvenor, Kim Dill-McFarland, Matt Altman
+
+## WGCNA
+
+### Load libraries
+
+```{r load_libs, message=FALSE}
+
+library(tidyverse)
+library(BIGpicture)
+library(kimma)
+library(RNAetc)
+library(SEARchways)
+library(ggrepel)
+library(limma)
+library(edgeR)
+library(readr)
+library(stringr)
+library(lme4)
+library(data.table)
+library(patchwork)
+library(scales)
+library(WGCNA)
+library(rrvgo)
+library(readxl)
+library(openxlsx)
+library(emmeans)
+library(ggupset)
+library(ggpubr)
+
+set.seed(101)
+
+```
+
+### Functions
+
+```{r fxs}
+
+loadRData <- function(fileName) {
+  load(fileName)
+  get(ls()[ls() !="fileName"])
+}
+
+```
+
+### Make Directories
+
+```{r make_dirs}
+
+dir.create("dat_clean/WGCNA_output")
+
+```
+
+### Load Data
+
+```{r load_dat, message=FALSE}
+
+ens_gene_dict <- loadRData(file = "dat_clean/ensembl_gene_dictionary.RData")
+
+# load viral mast cell voom object
+mc_voom_viral <- loadRData(file = "dat_clean/voom_objects/mc_voom_viral.RData")
+
+# load linear modeling output dataframe, Mast cell only
+mc_viral_lm_timepoint_treatment_out_df <- read.csv(file = "dat_clean/linear_model_output/mc_viral_lm_timepoint_treatment_out_df.csv")
+
+```
+
+### WGCNA
+
+```{r wgcna}
+
+# get significant genes from lm output
+viral_lm_timepoint_treatment_out_genes <- mc_viral_lm_timepoint_treatment_out_df %>% 
+ dplyr::distinct(gene) %>% dplyr::pull(gene)
+
+# subset unique significant DEGs from voom object
+mc_voom_viral_subset <- mc_voom_viral[viral_lm_timepoint_treatment_out_genes,]
+
+save(mc_voom_viral_subset, file = "dat_clean/WGCNA_output/mc_voom_viral_subset.rds")
+
+# module build
+mod.12min.40.maxL.ds3 <- WGCNA::blockwiseModules(datExpr = t(mc_voom_viral_subset$E),
+                                          power = 12,
+                                          networkType = "signed",
+                                          numericLabels = TRUE,
+                                          nThreads = 4,
+                                          minModuleSize = 40,
+                                          maxBlockSize = length(viral_lm_timepoint_treatment_out_genes),
+                                          deepSplit = 3)
+
+# save module output
+# 06/20/24
+save(mod.12min.40.maxL.ds3, file = "dat_clean/WGCNA_output/module_build.RData")
+
+```
+
+### Calculate Mean Module Expression
+
+```{r mean_mod_E}
+
+module_genes <- as.data.frame(mod.12min.40.maxL.ds3$colors) %>% 
+  tibble::rownames_to_column("geneName") %>%
+  dplyr::rename(module = "mod.12min.40.maxL.ds3$colors") %>%
+  #add leading 0 to module names for correct sorting of factor
+  dplyr::mutate(module = ifelse(module <= 9,
+                                paste("0", module, sep=""),
+                                module)) %>%
+  #Add color var
+  dplyr::mutate(mod.color = WGCNA::labels2colors(mod.12min.40.maxL.ds3$colors))
+
+# mean gene E
+
+mean_mod_E <- as.data.frame(mc_voom_viral_subset$E) %>% 
+  tibble::rownames_to_column("geneName") %>% 
+  dplyr::inner_join(module_genes, by = "geneName") %>% 
+  #Mean
+  dplyr::group_by(module) %>% 
+  dplyr::summarise(across(where(is.numeric), ~mean(., na.rm=TRUE)),
+            .groups = "drop")
+
+# 06/20/24
+write.csv(mean_mod_E, file = "dat_clean/WGCNA_output/mc_mean_module_exprs.csv")
+
+```
+
+## Module Level Linear Modeling
+### Module E ~ Timepoint*Treatment + median_cv_coverage
+
+```{r module_lm}
+
+mc_mod_timetreat_lm <- kimma::kmFit(counts = mean_mod_E,
+                             meta = mc_voom_viral_subset$targets,
+                             model = "~ Timepoint*Treatment + median_cv_coverage",
+                             run_contrast = TRUE,
+                             contrast_var = "Timepoint:Treatment",
+                             run_lm = TRUE,
+                             metrics = TRUE)
+
+# summarize_kmFit(mc_mod_timetreat_lm$lm.contrast, fdr_cutoff = c(0.1, 0.2, 0.25, 0.3)) %>% filter(contrast_ref == "Baseline Alone" & contrast_lvl %in% c("4 hrs Alone", "8 hrs Alone", "28 hrs Alone",
+#                                                                 "52 hrs Alone", "4 hrs AECs", "8 hrs AECs",
+#                                                                 "28 hrs AECs", "52 hrs AECs") |
+#   contrast_ref == "8 hrs Alone" & contrast_lvl == "8 hrs AECs" |
+#   contrast_ref == "28 hrs Alone" & contrast_lvl == "28 hrs AECs" |
+#   contrast_ref == "52 hrs Alone" & contrast_lvl == "52 hrs AECs")
+
+# 06/20/24
+saveRDS(mc_mod_timetreat_lm, file = "dat_clean/WGCNA_output/mc_module_lm_output.rds")
+
+```
+
+### Module Linear Model Output
+
+```{r mod_lm_out}
+
+# filter to contrasts of interest
+mc_mod_timetreat_lm_contrasts <- mc_mod_timetreat_lm$lm.contrast %>% 
+  tidyr::drop_na() %>% 
+  dplyr::filter(gene != "00") %>% 
+  dplyr::filter(contrast_ref == "Baseline Alone" & contrast_lvl %in% c("4 hrs Alone", "8 hrs Alone", "28 hrs Alone",
+                                                                "52 hrs Alone", "4 hrs AECs", "8 hrs AECs",
+                                                                "28 hrs AECs", "52 hrs AECs") |
+  contrast_ref == "8 hrs Alone" & contrast_lvl == "8 hrs AECs" |
+  contrast_ref == "28 hrs Alone" & contrast_lvl == "28 hrs AECs" |
+  contrast_ref == "52 hrs Alone" & contrast_lvl == "52 hrs AECs") %>% 
+  dplyr::mutate(contrasts = paste0(contrast_ref, "+", contrast_lvl)) %>% 
+  dplyr::mutate(contrasts = factor(contrasts, levels = c("Baseline Alone+4 hrs Alone",
+                                                  "Baseline Alone+8 hrs Alone",
+                                                  "Baseline Alone+28 hrs Alone",
+                                                  "Baseline Alone+52 hrs Alone",
+                                                  "Baseline Alone+4 hrs AECs",
+                                                  "Baseline Alone+8 hrs AECs",
+                                                  "Baseline Alone+28 hrs AECs",
+                                                  "Baseline Alone+52 hrs AECs",
+                                                  "8 hrs Alone+8 hrs AECs",
+                                                  "28 hrs Alone+28 hrs AECs",
+                                                  "52 hrs Alone+52 hrs AECs"))) %>% 
+  dplyr::filter(FDR < 0.25) %>%
+  dplyr::group_by(contrasts) %>% 
+  dplyr::arrange(FDR, .by_group = TRUE) %>% 
+  dplyr::ungroup()
+
+write.csv(mc_mod_timetreat_lm_contrasts, file = "dat_clean/WGCNA_output/mc_mod_timetreat_lm_output.csv")
+
+# get module output summary
+mc_mod_timetreat_lm_contrasts_sumary <- mc_mod_timetreat_lm_contrasts %>%
+  dplyr::group_by(contrasts) %>%
+  dplyr::summarise(Samples = n()) %>%
+  dplyr::arrange(desc(Samples)) %>%
+  dplyr::rename(num_genes = Samples)
+
+# get desired order for table output
+desired_order <- c("Baseline Alone+4 hrs Alone",
+                                                  "Baseline Alone+8 hrs Alone",
+                                                  "Baseline Alone+28 hrs Alone",
+                                                  "Baseline Alone+52 hrs Alone",
+                                                  "Baseline Alone+4 hrs AECs",
+                                                  "Baseline Alone+8 hrs AECs",
+                                                  "Baseline Alone+28 hrs AECs",
+                                                  "Baseline Alone+52 hrs AECs",
+                                                  "8 hrs Alone+8 hrs AECs",
+                                                  "28 hrs Alone+28 hrs AECs",
+                                                  "52 hrs Alone+52 hrs AECs")
+
+# reorder to desired order
+mc_mod_timetreat_lm_contrasts_sumary <- mc_mod_timetreat_lm_contrasts_sumary[match(desired_order,                                                                     mc_mod_timetreat_lm_contrasts_sumary$contrasts),]
+
+# 06/20/24
+write.csv(mc_mod_timetreat_lm_contrasts_sumary, file = "dat_clean/WGCNA_output/mc_mod_timetreat_lm_contrasts_sumary.csv")
+
+```
+
+### Module Level Enrichment
+
+```{r mod_enr}
+
+# create df, which gene belongs to which module
+mod_df <- data.frame(genes = names(mod.12min.40.maxL.ds3$colors), mod =
+             mod.12min.40.maxL.ds3$colors) %>% 
+  remove_rownames() %>% 
+  arrange(mod) %>% 
+  filter(mod != 0) %>% 
+  dplyr::rename(geneName = genes) %>% 
+  dplyr::rename(module.char = mod) %>% 
+  relocate(module.char, .before = geneName) %>% 
+  mutate(module.char = as.character(module.char))
+
+# get module, ensembl, symbol df
+mod_df_gene_names <- mod_df %>% 
+  dplyr::rename(ensembl_gene_id = geneName) %>% 
+  left_join(ens_gene_dict, by = "ensembl_gene_id") %>% 
+  dplyr::select(module.char, ensembl_gene_id, geneName)
+
+# save module/ensembl/symbol df
+write.csv(mod_df_gene_names, file = "dat_clean/WGCNA_output/mod_df_gene_names.csv")
+
+# enrichment
+enr_mod <- SEARchways::BIGprofiler(gene_df = mod_df,
+                       ID = "ENSEMBL",
+                       category = "H")
+
+openxlsx::write.xlsx(enr_mod, file = "dat_clean/WGCNA_output/module_enrichment_Hallmark.xlsx")
+
+enr_mod_GO <- SEARchways::BIGprofiler(gene_df = mod_df,
+                       ID = "ENSEMBL",
+                       category = "C5",
+                       subcategory = "GO:BP")
+
+openxlsx::write.xlsx(enr_mod_GO, file = "dat_clean/WGCNA_output/module_enrichment_GOBP.xlsx")
+
+```
+
+### Get specific module 1, 2, 9 and 21 contrasts
+
+```{r mods_of_interest}
+
+module1_2_9_21_contrasts <- mc_mod_timetreat_lm$lm.contrast %>% 
+  tidyr::drop_na() %>% 
+  dplyr::filter(gene != "00") %>% 
+  dplyr::filter(contrast_ref == "Baseline Alone" & contrast_lvl %in% c("4 hrs Alone", "8 hrs Alone", "28 hrs Alone",
+                                                                "52 hrs Alone", "4 hrs AECs", "8 hrs AECs",
+                                                                "28 hrs AECs", "52 hrs AECs") |
+  contrast_ref == "8 hrs Alone" & contrast_lvl == "8 hrs AECs" |
+  contrast_ref == "28 hrs Alone" & contrast_lvl == "28 hrs AECs" |
+  contrast_ref == "52 hrs Alone" & contrast_lvl == "52 hrs AECs") %>% 
+  dplyr::mutate(contrasts = paste0(contrast_ref, "+", contrast_lvl)) %>% 
+  dplyr::mutate(contrasts = factor(contrasts, levels = c("Baseline Alone+4 hrs Alone",
+                                                  "Baseline Alone+8 hrs Alone",
+                                                  "Baseline Alone+28 hrs Alone",
+                                                  "Baseline Alone+52 hrs Alone",
+                                                  "Baseline Alone+4 hrs AECs",
+                                                  "Baseline Alone+8 hrs AECs",
+                                                  "Baseline Alone+28 hrs AECs",
+                                                  "Baseline Alone+52 hrs AECs",
+                                                  "8 hrs Alone+8 hrs AECs",
+                                                  "28 hrs Alone+28 hrs AECs",
+                                                  "52 hrs Alone+52 hrs AECs"))) %>% 
+  dplyr::filter(FDR < 0.30) %>%
+  # dplyr::group_by(contrasts) %>% 
+  # dplyr::arrange(gene, .by_group = TRUE) %>% 
+  dplyr::arrange(gene) %>% 
+  dplyr::ungroup() %>% 
+  filter(gene %in% c("01", "02", "09", "21"))
+
+# 06/20/24
+write.csv(module1_2_9_21_contrasts, file = "dat_clean/WGCNA_output/module_of_interest_contrasts.csv")
+
+```
+
+
+
+
+
+
+
+
