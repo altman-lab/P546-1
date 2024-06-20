@@ -1,0 +1,949 @@
+---
+title: "U19_P546_1_figures.Rmd"
+output: html_document
+date: "2024-04-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# U19-P546-1
+## Ryan Murphy, Dane Grosvenor, Kim Dill-McFarland, Matt Altman
+
+## Figures
+
+### Load libraries
+
+```{r load_libs, message=FALSE}
+
+library(tidyverse)
+library(BIGpicture)
+library(kimma)
+library(RNAetc)
+library(SEARchways)
+library(ggrepel)
+library(limma)
+library(edgeR)
+library(readr)
+library(stringr)
+library(lme4)
+library(data.table)
+library(patchwork)
+library(scales)
+library(WGCNA)
+library(rrvgo)
+library(readxl)
+library(openxlsx)
+library(emmeans)
+library(ggupset)
+library(ggpubr)
+
+set.seed(101)
+
+```
+
+### Make Directories
+
+```{r make_dirs}
+
+dir.create("figures/boxplots")
+dir.create("figures/boxplots/mod1_genes")
+dir.create("figures/boxplots/mod2_genes")
+dir.create("figures/boxplots/additional_genes")
+dir.create("figures/bubbleplots")
+
+```
+
+### Functions
+
+```{r fxs}
+
+loadRData <- function(fileName) {
+  load(fileName)
+  get(ls()[ls() !="fileName"])
+}
+
+```
+
+### Load Data
+
+```{r load_dat, message=FALSE}
+
+# load mean module expression df
+mean_mod_E <- read.csv(file = "dat_clean/WGCNA_output/mc_mean_module_exprs.csv")
+mc_voom_viral_subset <- loadRData(file = "dat_clean/WGCNA_output/mc_voom_viral_subset.rds")
+enr_mod_GO <- readxl::read_excel(path = "dat_clean/WGCNA_output/module_enrichment_GOBP.xlsx")
+# load viral mast cell voom object
+mc_voom_viral <- loadRData(file = "dat_clean/voom_objects/mc_voom_viral.RData")
+ens_gene_dict <- loadRData(file = "dat_clean/ensembl_gene_dictionary.RData")
+
+```
+
+## Boxplots
+
+### Mean module expression boxplots
+
+```{r facet_module_exprs, warning = FALSE, message = FALSE}
+
+viral_mod_full_df <- mean_mod_E %>% 
+  dplyr::select(-X) %>% 
+  pivot_longer(-module) %>% 
+  pivot_wider(names_from = module, values_from = value) %>% 
+  dplyr::rename(libID = name) %>% 
+  dplyr::select(-"0") %>% 
+  pivot_longer(-libID) %>% 
+  left_join(mc_voom_viral_subset$targets, by = "libID") %>% 
+  dplyr::rename(module_num = name) %>% 
+  mutate(TimeStimTreat = paste0(Timepoint, "_", Stimulation, "_", Treatment)) %>%
+  relocate(TimeStimTreat, .after = Timepoint) %>%
+  mutate(TimeStimTreat = factor(TimeStimTreat, levels = c("Baseline_None_Alone",
+                                "4 hrs_HRV Infection_Alone",
+                                "8 hrs_HRV Infection_Alone",
+                                "8 hrs_HRV Infection_AECs",
+                                "28 hrs_HRV Infection_Alone",
+                                "28 hrs_HRV Infection_AECs",
+                                "52 hrs_HRV Infection_Alone",
+                                "52 hrs_HRV Infection_AECs")))
+
+# exclude BL and 4hr
+viral_mod_cs_df <- viral_mod_full_df %>% 
+  filter(!Timepoint %in% c("Baseline", "4 hrs"))
+
+viral_mod_cs_df2 <- viral_mod_cs_df %>% 
+  mutate(TimeStimTreat = paste0(Timepoint, "_", Stimulation, "_", Treatment)) %>%
+  relocate(TimeStimTreat, .after = Timepoint) %>%
+  mutate(TimeStimTreat = factor(TimeStimTreat, levels = c("Baseline_None_Alone",
+                                "4 hrs_HRV Infection_Alone",
+                                "8 hrs_HRV Infection_Alone",
+                                "8 hrs_HRV Infection_AECs",
+                                "28 hrs_HRV Infection_Alone",
+                                "28 hrs_HRV Infection_AECs",
+                                "52 hrs_HRV Infection_Alone",
+                                "52 hrs_HRV Infection_AECs")))
+
+viral_mod_cs_boxplots <- ggplot(viral_mod_cs_df2, aes(x = TimeStimTreat, y = value, label = `libID`)) +
+  geom_boxplot(outlier.shape = NA, fatten = NULL, aes(fill = Treatment)) +
+  geom_point(color = "black", size = 0.5, aes(color = `libID`)) +
+  theme(axis.text = element_text(angle = 90, vjust = 0.5)) +
+  stat_summary(fun = mean, geom = "point", color = "yellow", size = 1.50, fill = "yellow") +
+  facet_wrap(~module_num, scales = "free_y")
+
+ggsave("figures/boxplots/cross_sectional_modules_boxplots.pdf", viral_mod_cs_boxplots, width = 12)
+
+viral_mod_cs_boxplots
+
+```
+
+## Module 1 Timecourse
+
+```{r mod1_timecourse}
+
+# viral_mod_full_df
+
+supA_df <- viral_mod_full_df %>% 
+  pivot_wider(names_from = module_num, values_from = value)
+
+m_bl1 <- supA_df %>%
+  filter(TimeStimTreat %in% c("4 hrs_HRV Infection_Alone","Baseline_None_Alone")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`1`)) %>% 
+  ungroup()
+
+m_alone1 <- supA_df %>%
+  filter(!TimeStimTreat %in% c("Baseline_None_Alone", "8 hrs_HRV Infection_AECs",
+                               "28 hrs_HRV Infection_AECs", "52 hrs_HRV Infection_AECs")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`1`)) %>%
+  ungroup()
+
+m_aec1 <- supA_df %>%
+  filter(!TimeStimTreat %in% c("Baseline_None_Alone", "8 hrs_HRV Infection_Alone",
+                               "28 hrs_HRV Infection_Alone", "52 hrs_HRV Infection_Alone")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`1`)) %>% 
+  ungroup()
+
+mc_mod1_timecourse_boxplot_unfilled <- ggplot(viral_mod_full_df %>% filter(module_num == "1"), aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  geom_line(data = m_bl1,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "blue", linetype = "solid", size = 1) + 
+  geom_line(data = m_alone1,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#F8766D", linetype = "solid", size = 1) +
+  geom_line(data = m_aec1,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#00BFC4", linetype = "solid", size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+   scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+  ylab("Mean Module 1 Expression (log2 CPM)") +
+  ggtitle("Anti-Viral Interferon Response") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14)) +
+  theme(legend.position = c(0.075, 0.9))
+
+ggsave(filename = "figures/boxplots/module1_timecourse_bp.png", mc_mod1_timecourse_boxplot_unfilled,
+       width = 12)
+
+mc_mod1_timecourse_boxplot_unfilled
+
+```
+
+### Module 1 GO Results
+
+```{r mod1_go}
+
+mc_module1_GO_enr_df <- enr_mod_GO %>% 
+  filter(group == "1") %>% 
+  mutate(neg_log10_p = -log(`pval`, base = 10)) %>% 
+  mutate(neg_log10_FDR = -log(`FDR`, base = 10)) %>% 
+  mutate(pathway = gsub("GOBP_", "", pathway)) %>% 
+  mutate(pathway = tolower(gsub("_", " ", pathway))) %>% 
+  dplyr::filter(pathway %in% c("response to virus", "regulation of innate immune response", "viral genome replication", "response to interferon gamma", "response to type i interferon", "type i interferon production")) %>% 
+  dplyr::rename(`Number of Genes in Path` = group_in_pathway) %>% 
+  dplyr::rename(`-log10(adj.P)` = neg_log10_p) %>% 
+  dplyr::rename(`-log10(adj.FDR)` = neg_log10_FDR) %>% 
+  mutate(x_axis = "x") %>% 
+  arrange(desc(`Number of Genes in Path`)) 
+  
+
+mc_module1_GO_bubbleplot <- ggplot(mc_module1_GO_enr_df, 
+                                   aes(y = factor(pathway, levels = unique(pathway)),
+                                       x = `x_axis`, 
+                                       size = `Number of Genes in Path`)) +
+  geom_point(aes(color = `-log10(adj.FDR)`)) +
+  scale_color_gradient(low = "#FEAE96", high = "#FE0944") +
+  scale_size(range = c(.1, 5)) +
+  expand_limits(x = c(-5, 6)) +
+  # scale_x_continuous(breaks = NULL) +
+  coord_fixed(6) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) +
+  ylab("Pathway") +
+  ggtitle("Anti-Viral Interferon Response") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+ggsave("figures/bubbleplots/mod1_GO_bubbleplot.png", mc_module1_GO_bubbleplot, width = 12)
+
+mc_module1_GO_bubbleplot
+
+```
+
+### Module 1 Genes of Interest
+
+```{r mod1_goi}
+
+# get df of genes as cols
+mc_full_df <- as.data.frame(mc_voom_viral$E) %>% 
+  rownames_to_column() %>% 
+  pivot_longer(-rowname) %>% 
+  dplyr::rename(ensembl_gene_id = rowname) %>% 
+  pivot_wider(names_from = ensembl_gene_id, values_from = value) %>% 
+  dplyr::rename(libID = name) %>% 
+  left_join(mc_voom_viral$targets)
+
+mod1_goi <- ens_gene_dict %>% 
+  dplyr::filter(geneName %in% c("CCL13", "CXCL10", "IL12A", "IL12RB1", 
+                                "IL15RA", "IL22RA1", "MRGPRX2", "NTRK3",
+                                "IFNA2", "IFNL3", "IFIH1", "CYSLTR1")) %>% 
+  dplyr::select(ensembl_gene_id) %>% 
+  as.list()
+
+mc_full_df_mod1_goi <- mc_full_df %>% 
+  dplyr::select(Timepoint, Treatment, any_of(mod1_goi$ensembl_gene_id)) %>% 
+  pivot_longer(!c("Timepoint", "Treatment")) %>% 
+  dplyr::rename(ensembl_gene_id = name) %>% 
+  left_join(ens_gene_dict, by = "ensembl_gene_id")
+
+mod1_goi_gene_title <- unique(mc_full_df_mod1_goi$geneName)
+
+for (gene in seq_along(mod1_goi_gene_title)) {
+  
+  gene_title <- mod1_goi_gene_title[gene]
+
+  ggplot(mc_full_df_mod1_goi %>% dplyr::filter(geneName == mod1_goi_gene_title[gene]),
+         aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+   scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+    ylab(paste0(gene_title, " expresion (log2 CPM)")) +
+    ggtitle(paste0("Module 1 ", gene_title))
+  
+  filename <- paste0("figures/boxplots/mod1_genes/", mod1_goi_gene_title[gene], "_boxplot.png")
+  
+  ggsave(filename = filename, width = 7, height = 7)
+  
+}
+
+```
+
+### Module 2 Time Course
+
+```{r mod2_timecourse}
+
+m_bl2<- supA_df %>%
+  filter(TimeStimTreat %in% c("4 hrs_HRV Infection_Alone","Baseline_None_Alone")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`2`)) %>% 
+  ungroup()
+
+m_alone2 <- supA_df %>%
+  filter(!TimeStimTreat %in% c("Baseline_None_Alone", "8 hrs_HRV Infection_AECs",
+                               "28 hrs_HRV Infection_AECs", "52 hrs_HRV Infection_AECs")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`2`)) %>%
+  ungroup()
+
+m_aec2 <- supA_df %>%
+  filter(!TimeStimTreat %in% c("Baseline_None_Alone", "8 hrs_HRV Infection_Alone",
+                               "28 hrs_HRV Infection_Alone", "52 hrs_HRV Infection_Alone")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`2`)) %>% 
+  ungroup()
+
+mc_mod2_timecourse_boxplot_unfilled <- ggplot(viral_mod_full_df %>% filter(module_num == "2"), aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  geom_line(data = m_bl2,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "blue", linetype = "solid", size = 1) + 
+  geom_line(data = m_alone2,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#F8766D", linetype = "solid", size = 1) +
+  geom_line(data = m_aec2,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#00BFC4", linetype = "solid", size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+   scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+  ylab("Mean Module 2 Expression (log2 CPM)") +
+  ggtitle("DNA Replication") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14)) +
+  theme(legend.position = c(0.075, 0.15))
+  
+
+ggsave(filename = "figures/boxplots/module2_timecourse_bp.png", mc_mod2_timecourse_boxplot_unfilled,
+       width = 12)
+
+mc_mod2_timecourse_boxplot_unfilled
+
+```
+
+### Module 2 GO Results
+
+```{r mod2_go}
+
+mc_module2_GO_enr_df <- enr_mod_GO %>% 
+  filter(group == "2") %>% 
+  mutate(neg_log10_p = -log(`pval`, base = 10)) %>% 
+  mutate(neg_log10_FDR = -log(`FDR`, base = 10)) %>% 
+  mutate(pathway = gsub("GOBP_", "", pathway)) %>% 
+  mutate(pathway = tolower(gsub("_", " ", pathway))) %>% 
+  # filter(group_in_pathway > 10) %>% 
+  # filter(`k/K` > 0.1) %>% 
+  dplyr::filter(pathway %in% c("dna replication", "chromosome segregation", "mitotic nuclear division",
+                               "mitotic sister chromatid segregation")) %>% 
+  dplyr::rename(`Number of Genes in Path` = group_in_pathway) %>% 
+  dplyr::rename(`-log10(adj.P)` = neg_log10_p) %>% 
+  dplyr::rename(`-log10(adj.FDR)` = neg_log10_FDR) %>% 
+  mutate(x_axis = "x") %>% 
+  arrange(desc(`Number of Genes in Path`))
+  
+
+mc_module2_GO_bubbleplot <- ggplot(mc_module2_GO_enr_df, 
+                                   aes(y = factor(pathway, levels = unique(pathway)),
+                                       x = `x_axis`, 
+                                       size = `Number of Genes in Path`)) +
+  geom_point(aes(color = `-log10(adj.FDR)`)) +
+  scale_color_gradient(low = "#FEAE96", high = "#FE0944") +
+  scale_size(range = c(.1, 5)) +
+  expand_limits(x = c(-5, 6)) +
+  # scale_x_continuous(breaks = NULL) +
+  coord_fixed(6) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) +
+  ylab("Pathway") +
+  ggtitle("DNA Replication") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("figures/bubbleplots/mod2_GO_bubbleplot.png", mc_module2_GO_bubbleplot, width = 12)
+
+mc_module2_GO_bubbleplot
+
+```
+
+## Module 2 Genes of Interest
+
+```{r mod2_goi}
+
+mod2_goi <- ens_gene_dict %>% 
+  dplyr::filter(geneName %in% c("IL1RL1", "FCGR1A", "CCR2", "CCR5",
+                                "SIGLEC12", "SOCS3", "LTC4S")) %>% 
+  dplyr::select(ensembl_gene_id) %>% 
+  as.list()
+
+mc_full_df_mod2_goi <- mc_full_df %>% 
+  dplyr::select(Timepoint, Treatment, any_of(mod2_goi$ensembl_gene_id)) %>% 
+  pivot_longer(!c("Timepoint", "Treatment")) %>% 
+  dplyr::rename(ensembl_gene_id = name) %>% 
+  left_join(ens_gene_dict, by = "ensembl_gene_id")
+
+mod2_goi_gene_title <- unique(mc_full_df_mod2_goi$geneName)
+
+for (gene in seq_along(mod2_goi_gene_title)) {
+  
+  gene_title <- mod2_goi_gene_title[gene]
+
+  ggplot(mc_full_df_mod2_goi %>% dplyr::filter(geneName == mod2_goi_gene_title[gene]),
+         aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+   scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+    ylab(paste0(gene_title, " expresion (log2 CPM)")) +
+    ggtitle(paste0("Module 2 ", gene_title))
+  
+  filename <- paste0("figures/boxplots/mod2_genes/", mod1_goi_gene_title[gene], "_boxplot.png")
+  
+  ggsave(filename = filename, width = 7, height = 7)
+  
+}
+
+```
+
+## SF1 Module 9 boxplot
+
+```{r sf1_mod9_bp}
+
+m_bl9<- supA_df %>%
+  filter(TimeStimTreat %in% c("4 hrs_HRV Infection_Alone","Baseline_None_Alone")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`9`)) %>% 
+  ungroup()
+
+m_alone9 <- supA_df %>%
+  filter(!TimeStimTreat %in% c("Baseline_None_Alone", "8 hrs_HRV Infection_AECs",
+                               "28 hrs_HRV Infection_AECs", "52 hrs_HRV Infection_AECs")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`9`)) %>%
+  ungroup()
+
+m_aec9 <- supA_df %>%
+  filter(!TimeStimTreat %in% c("Baseline_None_Alone", "8 hrs_HRV Infection_Alone",
+                               "28 hrs_HRV Infection_Alone", "52 hrs_HRV Infection_Alone")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`9`)) %>% 
+  ungroup()
+
+mc_mod9_timecourse_boxplot_unfilled <- ggplot(viral_mod_full_df %>% filter(module_num == "9"), aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  geom_line(data = m_bl9,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "blue", linetype = "solid", size = 1) + 
+  geom_line(data = m_alone9,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#F8766D", linetype = "solid", size = 1) +
+  geom_line(data = m_aec9,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#00BFC4", linetype = "solid", size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+   scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+  ylab("Mean Module 9 Expression (log2 CPM)") +
+  ggtitle("Protein Synthesis") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14)) +
+  theme(legend.position = c(0.075, 0.15))
+
+ggsave(filename = "figures/boxplots/module9_timecourse_bp.png", mc_mod9_timecourse_boxplot_unfilled,
+       width = 12)
+
+mc_mod9_timecourse_boxplot_unfilled
+
+```
+
+## SF1B Module 9 GO Bubbleplot
+
+```{r sf1B_mod9_GO}
+
+mc_module9_GO_enr_df <- enr_mod_GO %>% 
+  filter(group == "9") %>% 
+  mutate(neg_log10_p = -log(`pval`, base = 10)) %>% 
+  mutate(neg_log10_FDR = -log(`FDR`, base = 10)) %>% 
+  mutate(pathway = gsub("GOBP_", "", pathway)) %>% 
+  mutate(pathway = tolower(gsub("_", " ", pathway))) %>% 
+  dplyr::filter(pathway %in% c("protein folding", "atp biosynthetic process", 
+                               "ribosome assembly", 
+                               "regulation of cellular protein catabolic process")) %>% 
+  dplyr::rename(`Number of Genes in Path` = group_in_pathway) %>% 
+  dplyr::rename(`-log10(adj.P)` = neg_log10_p) %>% 
+  dplyr::rename(`-log10(adj.FDR)` = neg_log10_FDR) %>% 
+  mutate(x_axis = "x") %>% 
+  arrange(desc(`Number of Genes in Path`))
+  
+
+mc_module9_GO_bubbleplot <- ggplot(mc_module9_GO_enr_df, 
+                                   aes(y = factor(pathway, levels = unique(pathway)),
+                                       x = `x_axis`, 
+                                       size = `Number of Genes in Path`)) +
+  geom_point(aes(color = `-log10(adj.FDR)`)) +
+  scale_color_gradient(low = "#FEAE96", high = "#FE0944") +
+  scale_size(range = c(.1, 5)) +
+  expand_limits(x = c(-5, 6)) +
+  # scale_x_continuous(breaks = NULL) +
+  coord_fixed(6) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) +
+  ylab("Pathway") +
+  ggtitle("Protein Synthesis") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("figures/bubbleplots/mod9_GO_bubbleplot.png", mc_module9_GO_bubbleplot, width = 12)
+
+mc_module9_GO_bubbleplot
+
+```
+
+## SF2 Module 21
+
+```{r sf2_mod21}
+
+m_bl21<- supA_df %>%
+  filter(TimeStimTreat %in% c("4 hrs_HRV Infection_Alone","Baseline_None_Alone")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`21`)) %>% 
+  ungroup()
+
+m_alone21 <- supA_df %>%
+  filter(!TimeStimTreat %in% c("Baseline_None_Alone", "8 hrs_HRV Infection_AECs",
+                               "28 hrs_HRV Infection_AECs", "52 hrs_HRV Infection_AECs")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`21`)) %>%
+  ungroup()
+
+m_aec21 <- supA_df %>%
+  filter(!TimeStimTreat %in% c("Baseline_None_Alone", "8 hrs_HRV Infection_Alone",
+                               "28 hrs_HRV Infection_Alone", "52 hrs_HRV Infection_Alone")) %>%
+  group_by(TimeStimTreat) %>%
+  mutate(avg = mean(`21`)) %>% 
+  ungroup()
+
+mc_mod21_timecourse_boxplot_unfilled <- ggplot(viral_mod_full_df %>% filter(module_num == "21"), aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  geom_line(data = m_bl21,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "blue", linetype = "solid", size = 1) + 
+  geom_line(data = m_alone21,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#F8766D", linetype = "solid", size = 1) +
+  geom_line(data = m_aec21,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#00BFC4", linetype = "solid", size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+   scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+  ylab("Mean Module 21 Expression (log2 CPM)") +
+  ggtitle("ATP/NADH Metabolism") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14)) +
+  theme(legend.position = c(0.075, 0.15))
+
+ggsave(filename = "figures/boxplots/module21_timecourse_bp.png", mc_mod21_timecourse_boxplot_unfilled,
+       width = 12)
+
+mc_mod21_timecourse_boxplot_unfilled
+
+```
+
+## SF2B Module 21 GO Bubbleplot
+
+```{r sf2b_mod21_GO}
+
+mc_module21_GO_enr_df <- enr_mod_GO %>% 
+  filter(group == "21") %>% 
+  mutate(neg_log10_p = -log(`pval`, base = 10)) %>% 
+  mutate(neg_log10_FDR = -log(`FDR`, base = 10)) %>% 
+  mutate(pathway = gsub("GOBP_", "", pathway)) %>% 
+  mutate(pathway = tolower(gsub("_", " ", pathway))) %>% 
+  filter(pathway %in% c("atp metabolic process", "atp synthesis coupled electron transport", "aerobic respiration",
+                        "cellular respiration", "nadh dehydrogenase complex assembly")) %>% 
+  dplyr::rename(`Number of Genes in Path` = group_in_pathway) %>% 
+  dplyr::rename(`-log10(adj.P)` = neg_log10_p) %>% 
+  dplyr::rename(`-log10(adj.FDR)` = neg_log10_FDR) %>% 
+  mutate(x_axis = "x") %>% 
+  arrange(desc(`Number of Genes in Path`))
+
+mc_module21_GO_bubbleplot <- ggplot(mc_module21_GO_enr_df, 
+                                   aes(y = factor(pathway, levels = unique(pathway)),
+                                       x = `x_axis`, 
+                                       size = `Number of Genes in Path`)) +
+  geom_point(aes(color = `-log10(adj.FDR)`)) +
+  scale_color_gradient(low = "#FEAE96", high = "#FE0944") +
+  scale_size(range = c(.1, 5)) +
+  expand_limits(x = c(-5, 6)) +
+  # scale_x_continuous(breaks = NULL) +
+  coord_fixed(6) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) +
+  ylab("Pathway") +
+  ggtitle("ATP/NADH Metabolism") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("figures/bubbleplots/mod21_GO_bubbleplot.png", mc_module21_GO_bubbleplot, width = 12)
+
+mc_module21_GO_bubbleplot
+
+```
+
+## Figure 5 Additional Genes of Interest
+
+```{r fig5_more_goi}
+
+more_goi <- ens_gene_dict %>% 
+  dplyr::filter(geneName %in% c("IL1RL1", "IL3RA", "IL7R", "IL18R1", 
+                                "IL5RA", "CCR2", "CCR5", "CYSTLTR1",
+                                "LTC4S", "TGFB1", "TGFB2", "TGFB3", "SMAD1",
+                                "SMAD2", "SMAD3", "SMAD4", "TGFBR1",
+                                "TGFBR2", "TSLP", "SERPINE1")) %>% 
+  dplyr::select(ensembl_gene_id) %>% 
+  as.list()
+
+mc_full_df_more_goi <- mc_full_df %>% 
+  dplyr::select(Timepoint, Treatment, any_of(more_goi$ensembl_gene_id)) %>% 
+  pivot_longer(!c("Timepoint", "Treatment")) %>% 
+  dplyr::rename(ensembl_gene_id = name) %>% 
+  left_join(ens_gene_dict, by = "ensembl_gene_id")
+
+more_goi_gene_title <- unique(mc_full_df_more_goi$geneName)
+
+for (gene in seq_along(more_goi_gene_title)) {
+  
+  gene_title <- more_goi_gene_title[gene]
+
+  ggplot(mc_full_df_more_goi %>% dplyr::filter(geneName == more_goi_gene_title[gene]),
+         aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+   scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+    ylab(paste0(gene_title, " expresion (log2 CPM)")) +
+    ggtitle(paste0("Gene of Interest ", gene_title))
+  
+  filename <- paste0("figures/boxplots/additional_genes/", more_goi_gene_title[gene], "_boxplot.png")
+  
+  ggsave(filename = filename, width = 7, height = 7)
+  
+}
+
+```
+
+### Patchwork All Timecourse and Enrichment Plots
+
+```{r pw_figure}
+
+# boxplots remade 
+
+# mod1
+mc1_bp <- ggplot(viral_mod_full_df %>% filter(module_num == "1"), aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  geom_line(data = m_bl1,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "blue", linetype = "solid", size = 1) +
+  geom_line(data = m_alone1,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#F8766D", linetype = "solid", size = 1) +
+  geom_line(data = m_aec1,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#00BFC4", linetype = "solid", size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+  scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+  ylab("Mean Module 1 Expression (log2 CPM)") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12)) +
+  theme(legend.position = c(0.15, 0.8)) +
+  theme(legend.text = element_text(size = 12)) +
+  theme(legend.title = element_text(size = 12))
+
+# mod2
+mc2_bp <- ggplot(viral_mod_full_df %>% filter(module_num == "2"), aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  geom_line(data = m_bl2,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "blue", linetype = "solid", size = 1) +
+  geom_line(data = m_alone2,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#F8766D", linetype = "solid", size = 1) +
+  geom_line(data = m_aec2,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#00BFC4", linetype = "solid", size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+  scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+  theme(legend.position = "none") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12)) +
+  theme(legend.text = element_text(size = 12)) +
+  theme(legend.title = element_text(size = 12)) +
+  ylab("Mean Module 2 Expression (log2 CPM)")
+
+# mod9
+mc9_bp <- ggplot(viral_mod_full_df %>% filter(module_num == "9"), aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  geom_line(data = m_bl9,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "blue", linetype = "solid", size = 1) +
+  geom_line(data = m_alone9,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#F8766D", linetype = "solid", size = 1) +
+  geom_line(data = m_aec9,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#00BFC4", linetype = "solid", size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+  scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+  theme(legend.position = "none") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12)) +
+  theme(legend.text = element_text(size = 12)) +
+  theme(legend.title = element_text(size = 12)) +
+  ylab("Mean Module 9 Expression (log2 CPM)")
+
+# mod21
+mc21_bp <- ggplot(viral_mod_full_df %>% filter(module_num == "21"), aes(x = Timepoint, y = value)) +
+  geom_boxplot(aes(color = Treatment)) +
+  geom_point(position = position_dodge(width = 0.75), aes(group = Treatment), size = 1) +
+  geom_line(data = m_bl21,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "blue", linetype = "solid", size = 1) +
+  geom_line(data = m_alone21,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#F8766D", linetype = "solid", size = 1) +
+  geom_line(data = m_aec21,
+            mapping = aes(x = Timepoint, y = avg, group = 1),
+            color = "#00BFC4", linetype = "solid", size = 1) +
+  stat_summary(fun = mean, geom = "point", aes(shape = Treatment, fill = Treatment), size = 3.00, position = "identity") +
+  scale_shape_manual(values = c(21,24)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(color = "black")) +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12)) +
+  theme(legend.text = element_text(size = 12)) +
+  theme(legend.title = element_text(size = 12)) +
+  theme(legend.position = "none") +
+  ylab("Mean Module 21 Expression (log2 CPM)")
+
+# new enrichment dataframes, remade for FDR bracket levels and renamed pathways
+
+mod1_enr_df <- mc_module1_GO_enr_df %>%
+  mutate(`FDR Bracket` = case_when(FDR < 0.001 ~ "FDR < 0.001",
+                             FDR < 0.01 ~ "FDR < 0.01",
+                             FDR < 0.1 ~ "FDR < 0.1")) %>%
+  mutate(`FDR Bracket` = factor(`FDR Bracket`, levels = c("FDR < 0.001", "FDR < 0.01", "FDR < 0.1"))) %>%
+  mutate(across(`pathway`, str_replace, "regulation of innate immune response",
+                paste("regulation of innate", "\n", "immune response"))) %>%
+  mutate(across(`pathway`, str_replace, "type i interferon production",
+                paste("type i", "\n", "inteferon production"))) %>%
+  mutate(across(`pathway`, str_replace, "response to type i interferon",
+                paste("response to type", "\n", "i interferon"))) %>%
+  mutate(across(`pathway`, str_replace, "response to interferon gamma",
+                paste("response to", "\n", "interferon gamma"))) %>%
+  mutate(across(`pathway`, str_replace, "viral genome replication",
+                paste("viral genome", "\n", "replication")))
+
+mod2_enr_df <- mc_module2_GO_enr_df %>%
+  mutate(`FDR Bracket` = case_when(FDR < 0.001 ~ "FDR < 0.001",
+                             FDR < 0.01 ~ "FDR < 0.01",
+                             FDR < 0.1 ~ "FDR < 0.1")) %>%
+  mutate(`FDR Bracket` = factor(`FDR Bracket`, levels = c("FDR < 0.001", "FDR < 0.01", "FDR < 0.1"))) %>%
+  mutate(across(`pathway`, str_replace, "mitotic sister chromatid segregation",
+                paste("mitotic sister", "\n", "chromatid segregation"))) %>%
+  mutate(across(`pathway`, str_replace, "mitotic nuclear division",
+                paste("mitotic nuclear", "\n", "division"))) %>%
+  mutate(across(`pathway`, str_replace, "chromosome segregation",
+                paste("chromosome", "\n", "segregation")))
+
+mod9_enr_df <- mc_module9_GO_enr_df %>%
+  mutate(`FDR Bracket` = case_when(FDR < 0.001 ~ "FDR < 0.001",
+                             FDR < 0.01 ~ "FDR < 0.01",
+                             FDR < 0.1 ~ "FDR < 0.1")) %>%
+  mutate(`FDR Bracket` = factor(`FDR Bracket`, levels = c("FDR < 0.001", "FDR < 0.01", "FDR < 0.1"))) %>%
+  mutate(across(`pathway`, str_replace, "regulation of cellular protein catabolic process",
+                paste("regulation of cellular", "\n", "protein catabolic process"))) %>%
+  mutate(across(`pathway`, str_replace, "atp biosynthetic process",
+                paste("biosynthetic", "\n", "process")))
+
+mod21_enr_df <- mc_module21_GO_enr_df %>%
+  mutate(`FDR Bracket` = case_when(FDR < 0.001 ~ "FDR < 0.001",
+                             FDR < 0.01 ~ "FDR < 0.01",
+                             FDR < 0.1 ~ "FDR < 0.1")) %>%
+  mutate(`FDR Bracket` = factor(`FDR Bracket`, levels = c("FDR < 0.001", "FDR < 0.01", "FDR < 0.1"))) %>%
+  mutate(across(`pathway`, str_replace, "atp synthesis coupled electron transport",
+                paste("atp synthesis coupled", "\n", "electron transport"))) %>%
+  mutate(across(`pathway`, str_replace, "nadh dehydrogenase complex assembly",
+                paste("nadh dehydrogenase", "\n", "complex assembly")))
+
+mod1_enr_plot <- ggplot(mod1_enr_df,
+       aes(y = factor(pathway, levels = unique(pathway)),
+           x = `x_axis`,
+           size = `Number of Genes in Path`)) +
+  # scale_color_continuous(breaks = c(5,10,25,50,100)) +
+  geom_point(aes(color = `FDR Bracket`)) +
+  # geom_point(aes(color = fdr_cat)) +
+  # try scale color gradientn
+  # scale_color_gradientn(colours = c("#FEAE96", "#FE0944"), limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_gradient2(low = "#F5D2D2", mid = "#FB8686", high = "#FF0000", limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_gradient(low = "#FEAE96", high = "#FE0944") +
+  # scale_color_viridis_c(limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_discrete(drop = FALSE, limits = levels(x$fdr_cat)) +
+  scale_color_manual(values = c("#4DAF4A", "#984EA3", "#F781BF"), drop = FALSE, limits = levels(mod1_enr_df$`FDR Bracket`)) +
+  # scale_colour_brewer(palette = "Paired") +
+  scale_size(range = c(.1, 5), breaks = c(5,10,25,50,100), limits = c(0,100)) +
+  expand_limits(x = c(-5, 6)) +
+  # coord_fixed(6) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) +
+  ylab("Pathway") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12)) +
+  theme(legend.text = element_text(size = 12)) +
+  theme(legend.title = element_text(size = 12))
+
+mod2_enr_plot <- ggplot(mod2_enr_df,
+                     aes(y = factor(pathway, levels = unique(pathway)),
+                         x = `x_axis`,
+                         size = `Number of Genes in Path`)) +
+  # scale_color_continuous(breaks = c(5,10,25,50,100)) +
+  geom_point(aes(color = `FDR Bracket`)) +
+  # geom_point(aes(color = fdr_cat)) +
+  # try scale color gradientn
+  # scale_color_gradientn(colours = c("#FEAE96", "#FE0944"), limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_gradient2(low = "#F5D2D2", mid = "#FB8686", high = "#FF0000", limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_gradient(low = "#FEAE96", high = "#FE0944") +
+  # scale_color_viridis_c(limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_discrete(drop = FALSE, limits = levels(x$fdr_cat)) +
+  scale_color_manual(values = c("#4DAF4A", "#984EA3", "#F781BF"), drop = FALSE, limits = levels(mod2_enr_df$`FDR Bracket`)) +
+  # scale_colour_brewer(palette = "Paired") +
+  scale_size(range = c(.1, 5), breaks = c(5,10,25,50,100), limits = c(0,100)) +
+  expand_limits(x = c(-5, 6)) +
+  # coord_fixed(6) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) +
+  ylab("Pathway") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12)) +
+  theme(legend.text = element_text(size = 12)) +
+  theme(legend.title = element_text(size = 12))
+
+mod9_enr_plot <- ggplot(mod9_enr_df,
+                     aes(y = factor(pathway, levels = unique(pathway)),
+                         x = `x_axis`,
+                         size = `Number of Genes in Path`)) +
+  # scale_color_continuous(breaks = c(5,10,25,50,100)) +
+  geom_point(aes(color = `FDR Bracket`)) +
+  # geom_point(aes(color = fdr_cat)) +
+  # try scale color gradientn
+  # scale_color_gradientn(colours = c("#FEAE96", "#FE0944"), limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_gradient2(low = "#F5D2D2", mid = "#FB8686", high = "#FF0000", limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_gradient(low = "#FEAE96", high = "#FE0944") +
+  # scale_color_viridis_c(limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_discrete(drop = FALSE, limits = levels(x$fdr_cat)) +
+  scale_color_manual(values = c("#4DAF4A", "#984EA3", "#F781BF"), drop = FALSE, limits = levels(mod9_enr_df$`FDR Bracket`)) +
+  # scale_colour_brewer(palette = "Paired") +
+  scale_size(range = c(.1, 5), breaks = c(5,10,25,50,100), limits = c(0,100)) +
+  expand_limits(x = c(-5, 6)) +
+  # coord_fixed(6) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) +
+  ylab("Pathway") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12)) +
+  theme(legend.text = element_text(size = 12)) +
+  theme(legend.title = element_text(size = 12))
+
+mod21_enr_plot <- ggplot(mod21_enr_df,
+                     aes(y = factor(pathway, levels = unique(pathway)),
+                         x = `x_axis`,
+                         size = `Number of Genes in Path`)) +
+  # scale_color_continuous(breaks = c(5,10,25,50,100)) +
+  geom_point(aes(color = `FDR Bracket`)) +
+  # geom_point(aes(color = fdr_cat)) +
+  # try scale color gradientn
+  # scale_color_gradientn(colours = c("#FEAE96", "#FE0944"), limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_gradient2(low = "#F5D2D2", mid = "#FB8686", high = "#FF0000", limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_gradient(low = "#FEAE96", high = "#FE0944") +
+  # scale_color_viridis_c(limits = c(0,50), breaks = c(5,10,20,40)) +
+  # scale_color_discrete(drop = FALSE, limits = levels(x$fdr_cat)) +
+  scale_color_manual(values = c("#4DAF4A", "#984EA3", "#F781BF"), drop = FALSE, limits = levels(mod21_enr_df$`FDR Bracket`)) +
+  # scale_colour_brewer(palette = "Paired") +
+  scale_size(range = c(.1, 5), breaks = c(5,10,25,50,100), limits = c(0,100)) +
+  expand_limits(x = c(-5, 6)) +
+  # coord_fixed(6) +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) +
+  ylab("Pathway") +
+  theme(axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12)) +
+  theme(legend.text = element_text(size = 12)) +
+  theme(legend.title = element_text(size = 12))
+
+modules_pw <- mc1_bp + mod1_enr_plot + mc2_bp + mod2_enr_plot +
+  mc9_bp + mod9_enr_plot + mc21_bp + mod21_enr_plot +
+  plot_layout(design = "AAB
+                        CCD
+                        EEF
+                        GGH", guides = "collect")
+
+ggsave("figures/modules_patchwork_fig.png", modules_pw, width = 15, height = 20)
+
+modules_pw
+
+```
+
+
+
+
