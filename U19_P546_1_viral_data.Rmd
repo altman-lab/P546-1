@@ -1,0 +1,132 @@
+---
+title: "U19_P546_1_viral_data.Rmd"
+output: html_document
+date: "2024-03-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# U19-P546-1
+## Ryan Murphy, Dane Grosvenor, Kim Dill-McFarland, Matt Altman
+
+## Include Viral Counts and Metadata
+
+### Load libraries
+
+```{r libs, message = FALSE}
+
+library(tidyverse)
+library(BIGpicture)
+library(kimma)
+library(RNAetc)
+library(SEARchways)
+library(ggrepel)
+library(limma)
+library(edgeR)
+library(readr)
+library(stringr)
+library(lme4)
+library(data.table)
+library(patchwork)
+library(scales)
+library(WGCNA)
+library(rrvgo)
+library(readxl)
+library(openxlsx)
+library(emmeans)
+library(ggupset)
+library(ggpubr)
+
+set.seed(101)
+
+```
+
+### Functions
+
+```{r fxs}
+
+loadRData <- function(fileName) {
+  load(fileName)
+  get(ls()[ls() !="fileName"])
+}
+
+```
+
+### Load Data
+
+```{r load_dat, message=FALSE}
+
+# load prior voom object, focusing on Mast Cell
+mc_voom <- loadRData(file = "dat_clean/voom_objects/mc_voom.RData")
+ens_gene_dict <- loadRData(file = "dat_clean/ensembl_gene_dictionary.RData")
+
+# load viral counts and metadata
+
+viral_quant_long <- read_csv(file = "dat_raw/P546_Viral_counts_long_SalmonQuant.csv")
+viral_counts_long <- read_csv(file = "dat_raw/P546_Viral_counts_long_SalmonCount.csv")
+viral_quant <- read_csv(file = "dat_raw/P546_Viral_counts_SalmonQuant.csv")
+viral_count <- read_csv(file = "dat_raw/P546_Viral_counts_SalmonCount.csv")
+
+```
+
+### Subset to RV16-A
+
+```{r subset_RV16A}
+
+# subset to RV16 for both
+viral_quant_long_NC_038311_1 <- viral_quant_long %>% 
+  dplyr::filter(Viral_genome == "NC_038311.1") %>% 
+  dplyr::rename(libID = libid) 
+
+viral_counts_long_NC_038311_1 <- viral_counts_long %>% 
+  dplyr::filter(Viral_genome == "NC_038311.1") %>% 
+  dplyr::rename(libID = libid)
+
+# join both data with 0.01 offset
+viral_load_dat_clean <- viral_counts_long_NC_038311_1 %>% 
+  dplyr::left_join(viral_quant_long_NC_038311_1, by = c("Viral_genome", "libID")) %>% 
+  dplyr::select(-c(Viral_genome, libID)) %>% 
+  dplyr::mutate(salmonCounts = log2(salmonCounts + 0.01)) %>% 
+  dplyr:: mutate(salmonQuantCounts = log2(salmonQuantCounts + 0.01))
+
+```
+
+### Join Mast Cell Voom object with Viral Data
+
+```{r mc_voom_viral}
+
+# make new voom object
+mc_voom_viral <- mc_voom
+
+# join viral data from raw loaded
+mc_voom_viral$targets <- mc_voom_viral$targets %>% 
+  dplyr::left_join(viral_quant_long_NC_038311_1, by = "libID") %>% 
+  dplyr::left_join(viral_counts_long_NC_038311_1,  by = c("libID", "Viral_genome")) %>% 
+  dplyr::mutate(normSalmonQuantCountsCPM = ((salmonQuantCounts / lib.size) * 1e6)) %>% # CPM transfrom
+  dplyr::mutate(normSalmonQuantCountsLog2 = log2(salmonQuantCounts + 1.00)) %>% # log2 +1 offset
+  dplyr::mutate(normSalmonQuantCountsCPMLog2 = log2(normSalmonQuantCountsCPM + 1.00)) %>%  # # log2 +1 offset of CPM variable
+  dplyr::mutate(ptID = `Donor.ID`) # make ptID column for downstream kimma linear modeling
+
+# save new voom object
+# run 06/20/24
+save(mc_voom_viral, file = "dat_clean/voom_objects/mc_voom_viral.RData")
+
+write.csv(mc_voom_viral$targets, file = "dat_clean/mast_cell_metadata.csv")
+
+```
+
+### R session info
+
+```{r sesh}
+
+sessionInfo()
+
+```
+
+
+
+
+
+
