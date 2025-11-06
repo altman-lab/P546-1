@@ -237,7 +237,9 @@ aec_counts_raw <- p546_counts_raw %>%
 
 # sanity check
 identical(colnames(aec_counts_raw), rownames(aec_meta)) # TRUE
-
+aec_counts_raw %>% 
+  rownames_to_column("ensembl_gene_id") %>% 
+write_csv(file = "dat_raw/P546-1_AEC_raw_counts.csv")
 ```
 
 ### Rare Gene Filter and Voom Transformation
@@ -277,6 +279,27 @@ save(aec_voom, file = "dat_clean/voom_objects/aec_voom.RData")
 
 ```
 
+```{r}
+rare <- as.data.frame(cpm(aec_dge_list$counts)) %>% 
+  #Filter genes removed
+  rownames_to_column("ensembl_gene_id") %>% 
+  filter(!(ensembl_gene_id %in% rownames(aec_dge_list_filter$counts))) %>% 
+  #Add gene symbols
+  left_join(key %>% dplyr::select(ensembl_gene_id, hgnc_symbol),
+            by = "ensembl_gene_id") %>% 
+  #format
+  pivot_longer(-c(ensembl_gene_id, hgnc_symbol)) %>% 
+  group_by(ensembl_gene_id, hgnc_symbol) %>% 
+  summarise(mean.CPM = mean(value, na.rm=TRUE),
+            min.CPM = min(value, na.rm=TRUE),
+            max.CPM = max(value, na.rm=TRUE),
+            express.in.libs = length(value[value > 0]),
+            .groups="drop")
+
+write_csv(rare, file="dat_clean/rare_aec_genes.csv")
+# rare
+```
+
 ### Mast Cell
 
 ```{r mc_dat}
@@ -295,7 +318,9 @@ mc_counts_raw <- p546_counts_raw %>%
 
 # sanity check
 identical(colnames(mc_counts_raw), rownames(mc_meta)) # TRUE
-
+mc_counts_raw %>% 
+  rownames_to_column("ensembl_gene_id") %>% 
+write_csv(file = "dat_raw/P546-1_MC_raw_counts.csv")
 ```
 
 ### Rare Gene Filter and Voom Transformation
@@ -320,10 +345,10 @@ mc_dge_list <- edgeR::DGEList(
 
 # Filter low abundance genes
 # min sample ~10% (3)
-mc_dge_list <- RNAetc::filter_rare(mc_dge_list, min.CPM = 0.1, min.sample = 3,
+mc_dge_list_filter <- RNAetc::filter_rare(mc_dge_list, min.CPM = 0.1, min.sample = 3,
                     gene.var = "symbol")
 
-calc_norm_factors_mc <- edgeR::calcNormFactors(mc_dge_list)
+calc_norm_factors_mc <- edgeR::calcNormFactors(mc_dge_list_filter)
 
 mc_voom <- limma::voom(
   counts = calc_norm_factors_mc,
@@ -337,6 +362,26 @@ save(mc_voom, file = "dat_clean/voom_objects/mc_voom.RData")
 
 ```
 
+```{r}
+rare2 <- as.data.frame(cpm(mc_dge_list$counts)) %>% 
+  #Filter genes removed
+  rownames_to_column("ensembl_gene_id") %>% 
+  filter(!(ensembl_gene_id %in% rownames(mc_dge_list_filter$counts))) %>% 
+  #Add gene symbols
+  left_join(key %>% dplyr::select(ensembl_gene_id, hgnc_symbol),
+            by = "ensembl_gene_id") %>% 
+  #format
+  pivot_longer(-c(ensembl_gene_id, hgnc_symbol)) %>% 
+  group_by(ensembl_gene_id, hgnc_symbol) %>% 
+  summarise(mean.CPM = mean(value, na.rm=TRUE),
+            min.CPM = min(value, na.rm=TRUE),
+            max.CPM = max(value, na.rm=TRUE),
+            express.in.libs = length(value[value > 0]),
+            .groups="drop")
+
+write_csv(rare2, file="dat_clean/rare_mc_genes.csv")
+# rare2
+```
 ### R session info
 
 ```{r sesh}
